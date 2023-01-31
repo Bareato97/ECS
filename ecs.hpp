@@ -10,17 +10,33 @@
 #include <set>
 #include <memory>
 #include <algorithm>
-
+/**
+ * Entity is defined as just a unsigned integer
+ * This is utilised by systems to link components together
+ * Max_ENTITIES to be utilised in future expansion for memory management
+ */
 using Entity = std::uint32_t;
 const Entity MAX_ENTITIES = 1028;
 
+/**
+ * Component types identified by a unique id
+ * MAX_COMPONENTS used for memory/array management
+ */
 using ComponentType = std::uint32_t;
 const ComponentType MAX_COMPONENTS = 32;
 
+/**
+ * Signature is the combinations of components and entity might 'have', an entity with a unique set of components will have a unique mask
+ */
 using Signature = std::bitset<MAX_COMPONENTS>;
 
 namespace ECS
 {
+	/**
+	 * @brief CRTP to generate unique componentids for each call with a unique template
+	 * 			calling this function with the same template will return the same component id
+	 * @return ComponentType 
+	 */
 	inline ComponentType GetComponentTypeID()
 	{
 		static ComponentType componentTypeID = 0u;
@@ -34,19 +50,24 @@ namespace ECS
 		return componentTypeID;
 	}
 
+	/**
+	 * EntityManager maintains the list of current entity indicies, as well as an array of their signatures with the entity id being an index to the array
+	 * Entities aren't bunched together
+	 */
 	class EntityManager
 	{
 		private:
 			std::queue<Entity> freeEntities;
 			std::array<Signature, MAX_ENTITIES> entitySignatures;
-			uint32_t entityCount;
+			uint32_t entityCount; // number of current entities used in the game state
 
 		public:
 			EntityManager()
 			{
+				// Create a queue with all potentially valid entity ids from 0 to MAX_ENTITIES - 1
 				for (Entity index = 0; index < MAX_ENTITIES; ++index)
 				{
-					freeEntities.push(index);
+					freeEntities.push(index); 
 				}
 			}
 
@@ -71,15 +92,14 @@ namespace ECS
 
 				entityCount--;
 			}
-
+			
 			void SetSignature(Entity entity, Signature signature)
 			{
-
 				assert(entity < MAX_ENTITIES && "Entity out of range");
 
 				entitySignatures[entity] = signature;
 			}
-
+			
 			Signature GetSignature(Entity entity)
 			{
 				assert(entity < MAX_ENTITIES && "Entity out of range");
@@ -87,7 +107,10 @@ namespace ECS
 				return entitySignatures[entity];
 			}
 	};
-
+	/**
+	 * BaseComponentArray is used to abstract what component arrays are managed by the component manager, as a component array may have different
+	 * 
+	 */
 	class BaseComponentArray
 	{
 		public:
@@ -95,13 +118,18 @@ namespace ECS
 			virtual void EntityDestroyed(Entity entity) = 0;
 	};
 
+	/**
+	 * Component array holds an of all components of a type, it is also responsible for the association of an entity to this component type
+	 * It deals with the addition/removal of components from an entity
+	 * @tparam CompType 
+	 */
 	template <typename CompType>
 	class ComponentArray : public BaseComponentArray
 	{
 		private:
 			std::array<CompType, MAX_ENTITIES> components;
-			std::unordered_map<Entity, size_t> entityToIndex;
-			std::unordered_map<size_t, Entity> indexToEntity;
+			std::unordered_map<Entity, size_t> entityToIndex; // maps the entity to an array index value, the entityid is static but the index may change
+			std::unordered_map<size_t, Entity> indexToEntity; 
 
 			ComponentType componentType;
 
@@ -113,6 +141,7 @@ namespace ECS
 				componentType = GetComponentTypeID<CompType>();
 			}
 
+			// Associates a component with an entity, and creates the two way relation between them
 			void InsertData(Entity entity, CompType component)
 			{
 				assert(entityToIndex.find(entity) == entityToIndex.end() && "Component added to same entity more than once.");
@@ -125,6 +154,11 @@ namespace ECS
 				arraySize++;
 			}
 
+			/**
+			 * Removes the component by entity value, and moves the last component in the list to the empty position to keep it tightly packed
+			 * Entity to index and indextoentity are updated to reflect the shuffle
+			 * @param entity 
+			 */
 			void RemoveData(Entity entity)
 			{
 				assert(entityToIndex.find(entity) != entityToIndex.end() && "Entity does not have component to remove.");
@@ -144,6 +178,7 @@ namespace ECS
 				arraySize--;
 			}
 
+			// returns the component associated with an entity
 			CompType &Get(Entity entity)
 			{
 				assert(entityToIndex.find(entity) != entityToIndex.end() && "Entity does not have component.");
@@ -151,6 +186,7 @@ namespace ECS
 				return components[entityToIndex[entity]];
 			}
 
+			// wrapper function for RemoveData to be called when an entity is removed by other means, this should be called by the coordinator
 			void EntityDestroyed(Entity entity) override
 			{
 				if(entityToIndex.find(entity) != entityToIndex.end())
@@ -158,11 +194,16 @@ namespace ECS
 			}
 	};
 
+	/**
+	 * The ComponentManager is responsible for mainting a collection of all component arrays
+	 * It applies wrappers to the adding or removing component function 
+	 */
 	class ComponentManager
 	{
 		private:
 			std::unordered_map<ComponentType, std::shared_ptr<BaseComponentArray>> componentArrays;
 
+			// Returns a pointer to a specific component
 			template<typename CompType>
 			std::shared_ptr<ComponentArray<CompType>> GetComponentArray()
 			{
@@ -172,6 +213,7 @@ namespace ECS
 			}
 
 		public:
+			// Initializes a new component array
 			template<typename CompType>
 			void RegisterComponent()
 			{
@@ -185,7 +227,7 @@ namespace ECS
 
 				return componentID;
 			}
-
+			// wrapper function for adding a component to an entity. Component data is created in the arguments
 			template <typename Comptype>
 			void AddComponent(Entity entity, Comptype component)
 			{
@@ -204,6 +246,7 @@ namespace ECS
 				return GetComponentArray<Comptype>()->Get(entity);
 			}
 
+			// calls entity destroyed for each component array
 			void EntityDestroyed(Entity entity)
 			{
 				for(auto const& pair : componentArrays)
@@ -215,6 +258,11 @@ namespace ECS
 			}
 	};
 
+	/**
+	 * ECS is the coordinator for the system, it contains a component and entity manager
+	 * It mostly delegates tasks for these system, and acts as the interface for the main loop to interact
+	 * with these containers
+	 */
 	class ECS
 	{
 		private:
@@ -281,12 +329,16 @@ namespace ECS
 				return entityManager->GetSignature(entity);
 			}
 	};
-
+	/**
+	 * System is a base class for specialised systems, it exists somewhat adjacent to the ECS coordinator
+	 * It isn't managed by the coordinator, but holds a reference to one in order to access entity/component data
+	 * Implementation could be expanded to be a component of the ECS coordinator but further testing required for functionality
+	 */
 	class System
 	{
 		protected:
-			std::vector<Entity> managedEntities;
-			Signature systemSignature;
+			std::vector<Entity> managedEntities; // list of entities managed by a system
+			Signature systemSignature; // unique signature used to identify what components the system requires
 			ECS *managingECS;
 
 		public:
@@ -301,7 +353,9 @@ namespace ECS
 
 				systemSignature.set(compSignature, true);
 			}
-
+			/** registers an entity to be actioned by the system, should be expanded so that it can action an entity as long as it has all the required components
+			 *	TODO implement bitset subset comparison
+			 */
 			void RegisterEntity(Entity entity, Signature entitySignature)
 			{
 				assert(entitySignature == systemSignature && "Entity signature does not match system signature");
