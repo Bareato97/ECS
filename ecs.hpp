@@ -1,3 +1,16 @@
+/**
+ * @file ecs.hpp
+ * @author Isaac K.
+ * 
+ * This is my attempt at an entity component system
+ * Deals with Entities, Components, Systems, which are all managed by a 'Coordinator' Coordinator acts as an interface to the entity, component and system managers
+ * The ECS is essentially a datatable that systems use for referencing which components bound together, as well as to put components in packed arrays
+ * No 'archtypes' are included in this scope
+ * TODO: implement proper initial memory allocation
+ * 
+ * 
+ */
+
 #pragma once
 
 #include <cinttypes>
@@ -8,8 +21,10 @@
 #include <unordered_map>
 #include <mutex>
 #include <set>
+#include <unordered_set>
 #include <memory>
 #include <algorithm>
+#include <Bits.h>
 /**
  * Entity is defined as just a unsigned integer
  * This is utilised by systems to link components together
@@ -259,6 +274,123 @@ namespace ECS
 	};
 
 	/**
+	 * System is a base class for specialised systems,
+	 * TODO: Implement transient systems for short lived entities
+	 */
+	class System
+	{
+		protected:
+			std::vector<Entity> managedEntities; // list of entities managed by a system
+			Signature systemSignature;			 // unique signature used to identify what components the system requires
+
+		public:
+			template <typename ComponentSignature>
+			void RegisterComponentToSystem()
+			{
+				ComponentType compSignature = GetComponentTypeID<ComponentSignature>();
+
+				systemSignature.set(compSignature, true);
+			}
+			/** registers an entity to be actioned by the system, should be expanded so that it can action an entity as long as it has all the required components
+			 *	
+			 */
+			void RegisterEntityToSystem(Entity entity, Signature entitySignature)
+			{
+				assert(entitySignature == systemSignature && "Entity signature does not match system signature");
+
+				managedEntities.emplace_back(entity);
+			}
+
+			void CheckEntity(Entity entity, Signature entitySignature)
+			{
+				if(entitySignature != systemSignature)
+				{
+					RemoveEntity(entity);
+				}
+			}
+
+			void RemoveEntity(Entity entity)
+			{
+				std::remove(managedEntities.begin(), managedEntities.end(), entity);
+			}
+
+			virtual void Update(){};
+	};
+	/**
+	 * System manager contains a list of all systems (should later be implemented as all active systems, maybe contain seperate lists?)
+	 * This is used for iterating over systems
+	 */
+	class SystemManager
+	{
+		private:
+			std::unordered_set<std::shared_ptr<System>> managedSystems;
+
+		public:
+			template<typename Sys>
+			std::shared_ptr<Sys> RegisterSystem()
+			{
+				auto system = std::make_shared<Sys>();
+				managedSystems.insert(system);
+				return system;
+			}
+
+			template <typename Sys>
+			void RegisterEntityToSystem(Entity entity, Signature entitySignature)
+			{
+				auto system = std::make_shared<Sys>();
+
+				if (managedSystems.find(system) != managedSystems.end())
+				{
+					system->RegisterEntityToSystem(entity, entitySignature);
+				}			
+			}
+
+			void RemoveEntity(System *system, Entity entity)
+			{
+				system->RemoveEntity(entity);
+			}
+			// Not to be used currently, should be a better management option for deleting and creating systems
+			template <typename Sys>
+			void RemoveSystem()
+			{
+				auto system = std::make_shared<Sys>();
+
+				if (managedSystems.find(system) != managedSystems.end()){
+					managedSystems.erase(system);
+				}
+			}
+
+			void EntityDestroyed(Entity entity)
+			{
+				for(auto const& sys : managedSystems)
+				{				
+					auto const& system = sys;
+
+					system->RemoveEntity(entity);
+				}
+			}
+
+			void EvaluateEntity(Entity entity, Signature entitySignature){
+				for (auto const &sys : managedSystems)
+				{
+					auto const &system = sys;
+
+					system->CheckEntity(entity, entitySignature);
+				}
+			}
+
+			void Update()
+			{
+				for (auto const &sys : managedSystems)
+				{
+					auto const &system = sys;
+
+					system->Update();
+				}
+			}
+	};
+
+	/**
 	 * ECS is the coordinator for the system, it contains a component and entity manager
 	 * It mostly delegates tasks for these system, and acts as the interface for the main loop to interact
 	 * with these containers
@@ -268,12 +400,14 @@ namespace ECS
 		private:
 			std::unique_ptr<ComponentManager> componentManager;
 			std::unique_ptr<EntityManager> entityManager;
+			std::unique_ptr<SystemManager> systemManager;
 
 		public:
 			void Init()
 			{
 				componentManager = std::make_unique<ComponentManager>();
 				entityManager = std::make_unique<EntityManager>();
+				systemManager = std::make_unique<SystemManager>();
 			}
 			Entity CreateEntity()
 			{
@@ -284,6 +418,7 @@ namespace ECS
 			{
 				entityManager->DestroyEntity(entity);
 				componentManager->EntityDestroyed(entity);
+				systemManager->EntityDestroyed(entity);
 			}
 
 			template<typename CompType>
@@ -329,43 +464,5 @@ namespace ECS
 				return entityManager->GetSignature(entity);
 			}
 	};
-	/**
-	 * System is a base class for specialised systems, it exists somewhat adjacent to the ECS coordinator
-	 * It isn't managed by the coordinator, but holds a reference to one in order to access entity/component data
-	 * Implementation could be expanded to be a component of the ECS coordinator but further testing required for functionality
-	 */
-	class System
-	{
-		protected:
-			std::vector<Entity> managedEntities; // list of entities managed by a system
-			Signature systemSignature; // unique signature used to identify what components the system requires
-			ECS *managingECS;
 
-		public:
-			System(ECS *ecs)
-			{
-				managingECS = ecs;
-			}
-			template <typename ComponentSignature>
-			void RegisterComponentToSystem()
-			{
-				ComponentType compSignature = GetComponentTypeID<ComponentSignature>();
-
-				systemSignature.set(compSignature, true);
-			}
-			/** registers an entity to be actioned by the system, should be expanded so that it can action an entity as long as it has all the required components
-			 *	TODO implement bitset subset comparison
-			 */
-			void RegisterEntity(Entity entity, Signature entitySignature)
-			{
-				assert(entitySignature == systemSignature && "Entity signature does not match system signature");
-
-				managedEntities.emplace_back(entity);
-			}
-
-			void RemoveEntity(Entity entity)
-			{
-				std::remove(managedEntities.begin(), managedEntities.end(), entity);
-			}
-	};
 }

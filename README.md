@@ -8,3 +8,4 @@ This is currently designed with a project in mind, and to be used as an opportun
 
 Some features are yet to be implemented like serialisation, or propery memory allocation. As this current version is more a proof of concept
 
+Header only file that can be included in an include directory.
